@@ -262,6 +262,13 @@ impl<P: ClapPlugin> nice_plug_core::context::gui::GuiContextInner for WrapperGui
             .set_state_object_from_gui(state)
     }
 
+    fn request_parameter_info_rescan(&self) {
+        self.wrapper
+            .upgrade()
+            .unwrap()
+            .request_parameter_info_rescan();
+    }
+
     fn request_restart(&self) {
         self.wrapper.upgrade().unwrap().request_restart();
     }

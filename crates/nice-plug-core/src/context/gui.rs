@@ -87,6 +87,12 @@ impl GuiContext {
     pub fn set_state(&self, state: PluginState) {
         self.inner.set_state(state);
     }
+
+    /// Inform the host that parameter metadata such as display names has changed and should be
+    /// queried again.
+    pub fn request_parameter_info_rescan(&self) {
+        self.inner.request_parameter_info_rescan();
+    }
 }
 
 /// Callbacks the plugin can make when the user interacts with its GUI such as updating parameter
@@ -139,6 +145,10 @@ pub trait GuiContextInner: Send + Sync + 'static {
     /// host. If the plugin is currently processing audio, then the parameter values will be
     /// restored at the end of the current processing cycle.
     fn set_state(&self, state: PluginState);
+
+    /// Inform the host that parameter metadata such as display names has changed and should be
+    /// queried again.
+    fn request_parameter_info_rescan(&self);
 
     /// Request the plugin to be restarted.
     fn request_restart(&self);

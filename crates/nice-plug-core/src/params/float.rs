@@ -95,6 +95,13 @@ impl Param for FloatParam {
         &self.info.name
     }
 
+    fn display_name(&self) -> String {
+        match &self.info.name_callback {
+            Some(callback) => callback(),
+            None => self.info.name.clone(),
+        }
+    }
+
     fn unit(&self) -> &'static str {
         self.info.unit
     }
@@ -338,6 +345,15 @@ impl FloatParam {
         self
     }
 
+    /// Provide a callback for a parameter name that may change at runtime. This callback is only
+    /// queried from host and GUI metadata paths, never while processing audio. Call
+    /// [`GuiContext::request_parameter_info_rescan()`][crate::context::gui::GuiContext::request_parameter_info_rescan()]
+    /// after the returned name changes.
+    pub fn with_name_callback(mut self, callback: Arc<dyn Fn() -> String + Send + Sync>) -> Self {
+        self.info.name_callback = Some(callback);
+        self
+    }
+
     /// Display a unit when rendering this parameter to a string. Appended after the
     /// [`value_to_string`][Self::with_value_to_string()] function if that is also set. nice-plug
     /// will not automatically add a space before the unit.
@@ -419,4 +435,22 @@ fn decimals_from_step_size(step_size: f32) -> usize {
     }
 
     num_digits as usize
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn display_name_uses_the_dynamic_name_callback() {
+        let param = FloatParam::new(
+            "Static name",
+            0.0,
+            FloatRange::Linear { min: 0.0, max: 1.0 },
+        )
+        .with_name_callback(Arc::new(|| "Dynamic name".to_owned()));
+
+        assert_eq!(param.name(), "Static name");
+        assert_eq!(param.display_name(), "Dynamic name");
+    }
 }
