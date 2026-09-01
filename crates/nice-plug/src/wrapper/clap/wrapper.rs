@@ -474,15 +474,12 @@ impl<P: ClapPlugin> MainThreadExecutor<Task<P>> for Wrapper<P> {
                     crate::nice_debug_assert_failure!("The host does not support parameters? What?")
                 }
             },
-            Task::RescanParamInfo => match &*self.host_params.borrow() {
-                Some(host_params) => {
+            Task::RescanParamInfo => {
+                if let Some(host_params) = &*self.host_params.borrow() {
                     crate::nice_debug_assert!(is_gui_thread);
                     unsafe_clap_call! { host_params=>rescan(&*self.host_callback, CLAP_PARAM_RESCAN_INFO) };
                 }
-                None => {
-                    crate::nice_debug_assert_failure!("The host does not support parameters? What?")
-                }
-            },
+            }
         };
     }
 }
@@ -1989,6 +1986,9 @@ impl<P: ClapPlugin> Wrapper<P> {
             let task_posted = self.schedule_gui(Task::StateChanged);
             crate::nice_debug_assert!(task_posted, "The task queue is full, dropping task...");
         }
+
+        let task_posted = self.schedule_gui(Task::RescanParamInfo);
+        crate::nice_debug_assert!(task_posted, "The task queue is full, dropping task...");
 
         success
     }

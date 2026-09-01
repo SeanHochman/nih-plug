@@ -439,18 +439,26 @@ fn decimals_from_step_size(step_size: f32) -> usize {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use super::*;
 
     #[test]
     fn display_name_uses_the_dynamic_name_callback() {
+        let generation = Arc::new(AtomicUsize::new(1));
         let param = FloatParam::new(
             "Static name",
             0.0,
             FloatRange::Linear { min: 0.0, max: 1.0 },
         )
-        .with_name_callback(Arc::new(|| "Dynamic name".to_owned()));
+        .with_name_callback(Arc::new({
+            let generation = Arc::clone(&generation);
+            move || format!("Dynamic name {}", generation.load(Ordering::Relaxed))
+        }));
 
         assert_eq!(param.name(), "Static name");
-        assert_eq!(param.display_name(), "Dynamic name");
+        assert_eq!(param.display_name(), "Dynamic name 1");
+        generation.store(2, Ordering::Relaxed);
+        assert_eq!(param.display_name(), "Dynamic name 2");
     }
 }
