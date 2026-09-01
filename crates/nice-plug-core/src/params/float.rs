@@ -55,6 +55,9 @@ pub struct FloatParam {
     step_size: Option<f32>,
     /// The parameter's human readable display name.
     name: String,
+    /// An optional callback for parameter names that may change at runtime. This is only queried
+    /// from host and GUI metadata paths, never while processing audio.
+    name_callback: Option<Arc<dyn Fn() -> String + Send + Sync>>,
     /// The parameter value's unit, added after [`value_to_string`][Self::value_to_string] if that
     /// is set. nice-plug will not automatically add a space before the unit.
     unit: &'static str,
@@ -107,6 +110,13 @@ impl Param for FloatParam {
 
     fn name(&self) -> &str {
         &self.name
+    }
+
+    fn display_name(&self) -> String {
+        match &self.name_callback {
+            Some(callback) => callback(),
+            None => self.name.clone(),
+        }
     }
 
     fn unit(&self) -> &'static str {
@@ -288,6 +298,7 @@ impl FloatParam {
             range,
             step_size: None,
             name: name.into(),
+            name_callback: None,
             unit: "",
             poly_modulation_id: None,
             value_to_string: None,
@@ -353,6 +364,15 @@ impl FloatParam {
     /// thread.
     pub fn with_callback(mut self, callback: Arc<dyn Fn(f32) + Send + Sync>) -> Self {
         self.value_changed = Some(callback);
+        self
+    }
+
+    /// Provide a callback for a parameter name that may change at runtime. This callback is only
+    /// queried from host and GUI metadata paths, never while processing audio. Call
+    /// [`GuiContext::request_parameter_info_rescan()`][crate::context::gui::GuiContext::request_parameter_info_rescan()]
+    /// after the returned name changes.
+    pub fn with_name_callback(mut self, callback: Arc<dyn Fn() -> String + Send + Sync>) -> Self {
+        self.name_callback = Some(callback);
         self
     }
 
@@ -437,4 +457,22 @@ fn decimals_from_step_size(step_size: f32) -> usize {
     }
 
     num_digits as usize
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn display_name_uses_the_dynamic_name_callback() {
+        let param = FloatParam::new(
+            "Static name",
+            0.0,
+            FloatRange::Linear { min: 0.0, max: 1.0 },
+        )
+        .with_name_callback(Arc::new(|| "Dynamic name".to_owned()));
+
+        assert_eq!(param.name(), "Static name");
+        assert_eq!(param.display_name(), "Dynamic name");
+    }
 }

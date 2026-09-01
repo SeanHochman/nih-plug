@@ -257,6 +257,13 @@ impl<P: ClapPlugin> nice_plug_core::context::gui::GuiContextInner for WrapperGui
             .unwrap()
             .set_state_object_from_gui(state)
     }
+
+    fn request_parameter_info_rescan(&self) {
+        self.wrapper
+            .upgrade()
+            .unwrap()
+            .request_parameter_info_rescan();
+    }
 }
 
 /// A remote control section. The plugin can fill this with information for one or more pages.
