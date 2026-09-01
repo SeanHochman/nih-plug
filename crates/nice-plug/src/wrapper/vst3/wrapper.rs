@@ -1292,7 +1292,7 @@ impl<P: Vst3Plugin> IAudioProcessorTrait for Wrapper<P> {
             let mut block_start = 0usize;
             let mut block_end;
             let mut event_start_idx = 0;
-            let result = loop {
+            loop {
                 // In sample-accurate automation mode we'll handle all parameter changes from the
                 // sorted process event array until we run into for the current sample, and then
                 // process the block between the current sample and the sample containing the next
@@ -1770,29 +1770,7 @@ impl<P: Vst3Plugin> IAudioProcessorTrait for Wrapper<P> {
                 } else {
                     block_start = block_end;
                 }
-            };
-
-            // After processing audio, we'll check if the editor has sent us updated plugin state.
-            // We'll restore that here on the audio thread to prevent changing the values during the
-            // process call and also to prevent inconsistent state when the host also wants to load
-            // plugin state.
-            // FIXME: Zero capacity channels allocate on receiving, find a better alternative that
-            //        doesn't do that
-            let updated_state = permit_alloc(|| self.inner.updated_state_receiver.try_recv());
-            if let Ok(mut state) = updated_state {
-                self.inner.set_state_inner(&mut state);
-
-                // We'll pass the state object back to the GUI thread so deallocation can happen
-                // there without potentially blocking the audio thread
-                if let Err(err) = self.inner.updated_state_sender.send(state) {
-                    crate::nice_debug_assert_failure!(
-                        "Failed to send state object back to GUI thread: {}",
-                        err
-                    );
-                };
             }
-
-            result
         })
     }
 

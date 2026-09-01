@@ -1,6 +1,5 @@
 use atomic_refcell::AtomicRefCell;
 use crossbeam::atomic::AtomicCell;
-use crossbeam::channel;
 use nice_plug_core::audio_setup::{AudioIOLayout, BufferConfig, ProcessMode};
 #[cfg(feature = "editor")]
 use nice_plug_core::context::gui::GuiContext;
@@ -143,18 +142,6 @@ pub(crate) struct WrapperInner<P: Vst3Plugin> {
     /// then do the block splitting based on that. Note events need to have their timing adjusted to
     /// match the block start, since they're all read upfront.
     pub process_events: AtomicRefCell<Vec<ProcessEvent<P>>>,
-    /// The plugin is able to restore state through a method on the `GuiContext`. To avoid changing
-    /// parameters mid-processing and running into garbled data if the host also tries to load state
-    /// at the same time the restoring happens at the end of each processing call. If this zero
-    /// capacity channel contains state data at that point, then the audio thread will take the
-    /// state out of the channel, restore the state, and then send it back through the same channel.
-    /// In other words, the GUI thread acts as a sender and then as a receiver, while the audio
-    /// thread acts as a receiver and then as a sender. That way deallocation can happen on the GUI
-    /// thread. All of this happens without any blocking on the audio thread.
-    pub updated_state_sender: channel::Sender<PluginState>,
-    /// The receiver belonging to [`new_state_sender`][Self::new_state_sender].
-    pub updated_state_receiver: channel::Receiver<PluginState>,
-
     /// The keys from `param_map` in a stable order.
     pub param_hashes: Vec<u32>,
     /// A mapping from parameter ID hashes (obtained from the string parameter IDs) to pointers to
@@ -233,10 +220,6 @@ impl<P: Vst3Plugin> WrapperInner<P> {
     pub fn new() -> Arc<Self> {
         let mut plugin = P::default();
         let task_executor = Mutex::new(plugin.task_executor());
-
-        // This is used to allow the plugin to restore preset data from its editor, see the comment
-        // on `Self::updated_state_sender`
-        let (updated_state_sender, updated_state_receiver) = channel::bounded(0);
 
         // This is a mapping from the parameter IDs specified by the plugin to pointers to those
         // parameters. These pointers are assumed to be safe to dereference as long as
@@ -361,9 +344,6 @@ impl<P: Vst3Plugin> WrapperInner<P> {
             output_events: AtomicRefCell::new(VecDeque::with_capacity(1024)),
             note_expression_controller: AtomicRefCell::new(NoteExpressionController::default()),
             process_events: AtomicRefCell::new(Vec::with_capacity(4096)),
-            updated_state_sender,
-            updated_state_receiver,
-
             param_hashes,
             param_by_hash,
             param_id_by_hash,
@@ -563,49 +543,15 @@ impl<P: Vst3Plugin> WrapperInner<P> {
         }
     }
 
-    /// Update the plugin's internal state, called by the plugin itself from the GUI thread. To
-    /// prevent corrupting data and changing parameters during processing the actual state is only
-    /// updated at the end of the audio processing cycle.
+    /// Update the plugin's internal state from the GUI thread.
+    ///
+    /// Persistent fields may allocate, lock, prepare resources, or destroy owners while they are
+    /// deserialized. Keep that work on the calling control thread instead of forwarding it to the
+    /// audio callback. Parameter and smoother storage is atomic, and plug-ins that need an audible
+    /// state handoff should publish a prepared replacement from their persistent-field callback.
     #[cfg(feature = "editor")]
     pub fn set_state_object_from_gui(&self, mut state: PluginState) {
-        use crossbeam::channel::SendTimeoutError;
-
-        // Use a loop and timeouts to handle the super rare edge case when this function gets called
-        // between a process call and the host disabling the plugin
-        loop {
-            if self.is_processing.load(Ordering::SeqCst) {
-                // If the plugin is currently processing audio, then we'll perform the restore
-                // operation at the end of the audio call. This involves sending the state to the
-                // audio thread, having the audio thread handle the state restore at the very end of
-                // the process function, and then sending the state back to this thread so it can be
-                // deallocated without blocking the audio thread.
-                match self
-                    .updated_state_sender
-                    .send_timeout(state, std::time::Duration::from_secs(1))
-                {
-                    Ok(_) => {
-                        // As mentioned above, the state object will be passed back to this thread
-                        // so we can deallocate it without blocking.
-                        let state = self.updated_state_receiver.recv();
-                        drop(state);
-                        break;
-                    }
-                    Err(SendTimeoutError::Timeout(value)) => {
-                        state = value;
-                        continue;
-                    }
-                    Err(SendTimeoutError::Disconnected(_)) => {
-                        crate::nice_debug_assert_failure!("State update channel got disconnected");
-                        return;
-                    }
-                }
-            } else {
-                // Otherwise we'll set the state right here and now, since this function should be
-                // called from a GUI thread
-                self.set_state_inner(&mut state);
-                break;
-            }
-        }
+        self.set_state_inner(&mut state);
 
         // After the state has been updated, notify the host about the new parameter values
         let task_posted = self
@@ -637,19 +583,17 @@ impl<P: Vst3Plugin> WrapperInner<P> {
 
     /// Immediately set the plugin state. Returns `false` if the deserialization failed. The plugin
     /// state is set from a couple places, so this function aims to deduplicate that. Includes
-    /// `permit_alloc()`s around the deserialization and initialization for the use case where
-    /// `set_state_object_from_gui()` was called while the plugin is process audio.
+    /// `permit_alloc()`s around deserialization because persistent fields may allocate.
     ///
     /// Implicitly emits `Task::ParameterValuesChanged`.
     ///
     /// # Notes
     ///
-    /// `self.plugin` must _not_ be locked while calling this function or it will deadlock.
+    /// This must be called from a non-audio thread. `self.plugin` must _not_ be locked while
+    /// calling this function or it will deadlock.
     pub fn set_state_inner(&self, state: &mut PluginState) -> bool {
-        // FIXME: This is obviously not realtime-safe, but loading presets without doing this
-        //        could lead to inconsistencies. `state::deserialize_object()` normally never
-        //        allocates, but if the plugin has persistent non-parameter data then its
-        //        `deserialize_fields()` implementation may still allocate.
+        // `state::deserialize_object()` normally never allocates, but persistent non-parameter
+        // fields may allocate and are deliberately kept on this control-thread path.
         let success = permit_alloc(|| unsafe {
             state::deserialize_object::<P>(
                 state,
