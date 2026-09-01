@@ -80,6 +80,16 @@ pub trait Param: Display + Debug + sealed::Sealed {
     /// Get the human readable name for this parameter.
     fn name(&self) -> &str;
 
+    /// Get the current human readable name for this parameter.
+    ///
+    /// This defaults to the static name returned by [`name()`][Self::name()]. Parameter types may
+    /// override this to provide a name that changes at runtime. Hosts need to be notified after
+    /// the value returned by this function changes through
+    /// [`GuiContext::request_parameter_info_rescan()`][crate::context::gui::GuiContext::request_parameter_info_rescan()].
+    fn display_name(&self) -> String {
+        self.name().to_owned()
+    }
+
     /// Get the unit label for this parameter, if any.
     fn unit(&self) -> &'static str;
 

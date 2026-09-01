@@ -178,4 +178,8 @@ impl<P: Plugin, B: Backend<P>> GuiContextInner for WrapperGuiContext<P, B> {
             .unwrap()
             .set_state_object_from_gui(state)
     }
+
+    fn request_parameter_info_rescan(&self) {
+        // Not relevant for standalone backend
+    }
 }

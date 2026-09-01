@@ -244,4 +244,11 @@ impl<P: Vst3Plugin + Send> GuiContextInner for WrapperGuiContext<P> {
             .unwrap()
             .set_state_object_from_gui(state)
     }
+
+    fn request_parameter_info_rescan(&self) {
+        self.inner
+            .upgrade()
+            .unwrap()
+            .request_parameter_info_rescan();
+    }
 }
