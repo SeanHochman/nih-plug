@@ -552,15 +552,6 @@ impl<P: Vst3Plugin> WrapperInner<P> {
     #[cfg(feature = "editor")]
     pub fn set_state_object_from_gui(&self, mut state: PluginState) {
         self.set_state_inner(&mut state);
-
-        // After the state has been updated, notify the host about the new parameter values
-        let task_posted = self
-            .event_loop
-            .borrow()
-            .as_ref()
-            .unwrap()
-            .schedule_gui(Task::TriggerRestart(RestartFlags_::kParamValuesChanged));
-        crate::nice_debug_assert!(task_posted, "The task queue is full, dropping task...");
     }
 
     pub fn set_latency_samples(&self, samples: u32) {
@@ -617,6 +608,10 @@ impl<P: Vst3Plugin> WrapperInner<P> {
         }
 
         let task_posted = self.schedule_gui(Task::ParameterInfoChanged);
+        crate::nice_debug_assert!(task_posted, "The task queue is full, dropping task...");
+
+        let task_posted =
+            self.schedule_gui(Task::TriggerRestart(RestartFlags_::kParamValuesChanged));
         crate::nice_debug_assert!(task_posted, "The task queue is full, dropping task...");
 
         success

@@ -114,6 +114,10 @@ use crate::wrapper::util::{
 /// more than this many parameters at a time will cause changes to get lost.
 const OUTPUT_EVENT_QUEUE_CAPACITY: usize = 2048;
 
+/// Reject corrupt or hostile length prefixes before allocating the CLAP state buffer. CLAP streams
+/// do not expose their remaining length, so Nice Plug prepends this length when saving state.
+const MAX_STATE_SIZE_BYTES: usize = 64 * 1024 * 1024;
+
 pub struct Wrapper<P: ClapPlugin> {
     /// A reference to this object, upgraded to an `Arc<Self>` for the GUI context.
     this: AtomicRefCell<Weak<Self>>,
@@ -1794,10 +1798,7 @@ impl<P: ClapPlugin> Wrapper<P> {
     /// audio callback. Parameter and smoother storage is atomic, and plug-ins that need an audible
     /// state handoff should publish a prepared replacement from their persistent-field callback.
     pub fn set_state_object_from_gui(&self, mut state: PluginState) {
-        if self.set_state_inner(&mut state) {
-            let task_posted = self.schedule_gui(Task::RescanParamValues);
-            crate::nice_debug_assert!(task_posted, "The task queue is full, dropping task...");
-        }
+        self.set_state_inner(&mut state);
     }
 
     pub fn set_latency_samples(&self, samples: u32) {
@@ -1928,6 +1929,9 @@ impl<P: ClapPlugin> Wrapper<P> {
         }
 
         let task_posted = self.schedule_gui(Task::RescanParamInfo);
+        crate::nice_debug_assert!(task_posted, "The task queue is full, dropping task...");
+
+        let task_posted = self.schedule_gui(Task::RescanParamValues);
         crate::nice_debug_assert!(task_posted, "The task queue is full, dropping task...");
 
         success
@@ -3694,8 +3698,20 @@ impl<P: ClapPlugin> Wrapper<P> {
             return false;
         }
         let length = u64::from_le_bytes(length_bytes);
+        let Ok(length) = usize::try_from(length) else {
+            crate::nice_debug_assert_failure!("State length does not fit in memory: {}", length);
+            return false;
+        };
+        if length > MAX_STATE_SIZE_BYTES {
+            crate::nice_debug_assert_failure!(
+                "State length exceeds the {} byte limit: {}",
+                MAX_STATE_SIZE_BYTES,
+                length
+            );
+            return false;
+        }
 
-        let mut read_buffer: Vec<u8> = Vec::with_capacity(length as usize);
+        let mut read_buffer: Vec<u8> = Vec::with_capacity(length);
         if !read_stream(unsafe { &*stream }, read_buffer.spare_capacity_mut()) {
             crate::nice_debug_assert_failure!(
                 "Error or end of stream while reading the state buffer from the stream."
@@ -3703,7 +3719,7 @@ impl<P: ClapPlugin> Wrapper<P> {
             return false;
         }
         unsafe {
-            read_buffer.set_len(length as usize);
+            read_buffer.set_len(length);
         }
 
         match unsafe { state::deserialize_json(&read_buffer) } {
