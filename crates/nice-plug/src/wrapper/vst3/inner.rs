@@ -188,6 +188,8 @@ pub enum Task<P: Plugin> {
     /// Trigger a restart with the given restart flags. This is a bit set of the flags from
     /// [`vst3::Steinberg::Vst::RestartFlags`].
     TriggerRestart(i32),
+    /// Inform the host that parameter names and other descriptive metadata may have changed.
+    ParameterInfoChanged,
     // Request the editor to be resized according to its current size. Right now there is no way to
     // handle "denied resize" requests yet.
     #[cfg(feature = "editor")]
@@ -620,8 +622,7 @@ impl<P: Vst3Plugin> WrapperInner<P> {
     }
 
     pub fn request_parameter_info_rescan(&self) {
-        let task_posted =
-            self.schedule_gui(Task::TriggerRestart(RestartFlags_::kParamTitlesChanged));
+        let task_posted = self.schedule_gui(Task::ParameterInfoChanged);
         crate::nice_debug_assert!(task_posted, "The task queue is full, dropping task...");
     }
 
@@ -687,6 +688,9 @@ impl<P: Vst3Plugin> WrapperInner<P> {
             crate::nice_debug_assert!(task_posted, "The task queue is full, dropping task...");
         }
 
+        let task_posted = self.schedule_gui(Task::ParameterInfoChanged);
+        crate::nice_debug_assert!(task_posted, "The task queue is full, dropping task...");
+
         success
     }
 }
@@ -729,6 +733,19 @@ impl<P: Vst3Plugin> MainThreadExecutor<Task<P>> for WrapperInner<P> {
                 },
                 None => crate::nice_debug_assert_failure!("Component handler not yet set"),
             },
+            Task::ParameterInfoChanged => {
+                if let Some(handler) = self.component_handler.borrow().as_ref() {
+                    unsafe {
+                        crate::nice_debug_assert!(is_gui_thread);
+                        let result = handler.restartComponent(RestartFlags_::kParamTitlesChanged);
+                        crate::nice_debug_assert_eq!(
+                            result,
+                            kResultOk,
+                            "Failed the parameter info restart request"
+                        );
+                    }
+                }
+            }
             #[cfg(feature = "editor")]
             Task::RequestResize { size, scale_factor } => {
                 if self.is_editor_open.load(Ordering::SeqCst) {
