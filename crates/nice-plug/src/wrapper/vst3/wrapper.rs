@@ -3,9 +3,9 @@ use nice_plug_core::context::process::Transport;
 #[cfg(feature = "editor")]
 use nice_plug_core::editor::Editor;
 use nice_plug_core::midi::sysex::SysExMessage;
-use nice_plug_core::midi::{MidiConfig, NoteEvent};
+use nice_plug_core::midi::{MidiConfig, NoteEvent, PluginNoteEvent};
 use nice_plug_core::params::ParamFlags;
-use nice_plug_core::plugin::ProcessStatus;
+use nice_plug_core::plugin::{Plugin, ProcessStatus};
 use std::borrow::Borrow;
 use std::ffi::c_void;
 use std::mem::{self, MaybeUninit};
@@ -44,6 +44,36 @@ use vst3::{Class, ComRef};
 use widestring::U16CStr;
 
 use super::inner::{ProcessEvent, WrapperInner};
+
+trait ProcessEventsExt<P: Plugin> {
+    fn push_parameter_bounded(&mut self, timing: u32, hash: u32, normalized_value: f32) -> bool;
+    fn push_note_bounded(&mut self, event: PluginNoteEvent<P>) -> bool;
+}
+
+impl<P: Plugin> ProcessEventsExt<P> for Vec<ProcessEvent<P>> {
+    fn push_parameter_bounded(&mut self, timing: u32, hash: u32, normalized_value: f32) -> bool {
+        if self.len() == self.capacity() {
+            return false;
+        }
+        let sequence = self.len();
+        self.push(ProcessEvent::ParameterChange {
+            timing,
+            hash,
+            normalized_value,
+            sequence,
+        });
+        true
+    }
+
+    fn push_note_bounded(&mut self, event: PluginNoteEvent<P>) -> bool {
+        if self.len() == self.capacity() {
+            return false;
+        }
+        let sequence = self.len();
+        self.push(ProcessEvent::NoteEvent { event, sequence });
+        true
+    }
+}
 use super::note_expressions::{self, NoteExpressionController};
 use super::util::{VST3_MIDI_CCS, VST3_MIDI_NUM_PARAMS, VST3_MIDI_PARAMS_START, u16strlcpy};
 use super::util::{VST3_MIDI_CHANNELS, VST3_MIDI_PARAMS_END};
@@ -1097,6 +1127,7 @@ impl<P: Vst3Plugin> IAudioProcessorTrait for Wrapper<P> {
             // can treat it as a sort of queue.
             let mut process_events = self.inner.process_events.borrow_mut();
             process_events.clear();
+            let mut process_events_overflowed = false;
 
             // First we'll go through the parameter changes. This may also include MIDI CC messages
             // if the plugin supports those
@@ -1143,7 +1174,7 @@ impl<P: Vst3Plugin> IAudioProcessorTrait for Wrapper<P> {
                                     let midi_cc = (midi_param_relative_idx % VST3_MIDI_CCS) as u8;
                                     let midi_channel =
                                         (midi_param_relative_idx / VST3_MIDI_CCS) as u8;
-                                    process_events.push(ProcessEvent::NoteEvent(match midi_cc {
+                                    let note_event = match midi_cc {
                                         // kAfterTouch
                                         128 => NoteEvent::MidiChannelPressure {
                                             timing,
@@ -1162,13 +1193,12 @@ impl<P: Vst3Plugin> IAudioProcessorTrait for Wrapper<P> {
                                             cc: n,
                                             value,
                                         },
-                                    }));
+                                    };
+                                    process_events_overflowed |=
+                                        !process_events.push_note_bounded(note_event);
                                 } else if P::SAMPLE_ACCURATE_AUTOMATION {
-                                    process_events.push(ProcessEvent::ParameterChange {
-                                        timing,
-                                        hash: param_hash,
-                                        normalized_value: value,
-                                    });
+                                    process_events_overflowed |= !process_events
+                                        .push_parameter_bounded(timing, param_hash, value);
                                 } else {
                                     self.inner.set_normalized_value_by_hash(
                                         param_hash,
@@ -1207,48 +1237,52 @@ impl<P: Vst3Plugin> IAudioProcessorTrait for Wrapper<P> {
                             // expression value events
                             note_expression_controller.register_note(&event);
 
-                            process_events.push(ProcessEvent::NoteEvent(NoteEvent::NoteOn {
-                                timing,
-                                voice_id: if event.noteId != -1 {
-                                    Some(event.noteId)
-                                } else {
-                                    None
-                                },
-                                channel: event.channel as u8,
-                                note: event.pitch as u8,
-                                velocity: event.velocity,
-                            }));
+                            process_events_overflowed |=
+                                !process_events.push_note_bounded(NoteEvent::NoteOn {
+                                    timing,
+                                    voice_id: if event.noteId != -1 {
+                                        Some(event.noteId)
+                                    } else {
+                                        None
+                                    },
+                                    channel: event.channel as u8,
+                                    note: event.pitch as u8,
+                                    velocity: event.velocity,
+                                });
                         } else if event.r#type == EventTypes_::kNoteOffEvent as u16 {
                             let event = unsafe { event.__field0.noteOff };
-                            process_events.push(ProcessEvent::NoteEvent(NoteEvent::NoteOff {
-                                timing,
-                                voice_id: if event.noteId != -1 {
-                                    Some(event.noteId)
-                                } else {
-                                    None
-                                },
-                                channel: event.channel as u8,
-                                note: event.pitch as u8,
-                                velocity: event.velocity,
-                            }));
+                            process_events_overflowed |=
+                                !process_events.push_note_bounded(NoteEvent::NoteOff {
+                                    timing,
+                                    voice_id: if event.noteId != -1 {
+                                        Some(event.noteId)
+                                    } else {
+                                        None
+                                    },
+                                    channel: event.channel as u8,
+                                    note: event.pitch as u8,
+                                    velocity: event.velocity,
+                                });
                         } else if event.r#type == EventTypes_::kPolyPressureEvent as u16 {
                             let event = unsafe { event.__field0.polyPressure };
-                            process_events.push(ProcessEvent::NoteEvent(NoteEvent::PolyPressure {
-                                timing,
-                                voice_id: if event.noteId != -1 {
-                                    Some(event.noteId)
-                                } else {
-                                    None
-                                },
-                                channel: event.channel as u8,
-                                note: event.pitch as u8,
-                                pressure: event.pressure,
-                            }));
+                            process_events_overflowed |=
+                                !process_events.push_note_bounded(NoteEvent::PolyPressure {
+                                    timing,
+                                    voice_id: if event.noteId != -1 {
+                                        Some(event.noteId)
+                                    } else {
+                                        None
+                                    },
+                                    channel: event.channel as u8,
+                                    note: event.pitch as u8,
+                                    pressure: event.pressure,
+                                });
                         } else if event.r#type == EventTypes_::kNoteExpressionValueEvent as u16 {
                             let event = unsafe { event.__field0.noteExpressionValue };
                             match note_expression_controller.translate_event(timing, &event) {
                                 Some(translated_event) => {
-                                    process_events.push(ProcessEvent::NoteEvent(translated_event))
+                                    process_events_overflowed |=
+                                        !process_events.push_note_bounded(translated_event);
                                 }
                                 None => crate::nice_debug_assert_failure!(
                                     "Unhandled note expression type: {}",
@@ -1268,7 +1302,8 @@ impl<P: Vst3Plugin> IAudioProcessorTrait for Wrapper<P> {
                                 std::slice::from_raw_parts(event.bytes, event.size as usize)
                             };
                             if let Ok(note_event) = NoteEvent::from_midi(timing, sysex_buffer) {
-                                process_events.push(ProcessEvent::NoteEvent(note_event));
+                                process_events_overflowed |=
+                                    !process_events.push_note_bounded(note_event);
                             };
                         }
                     }
@@ -1276,18 +1311,10 @@ impl<P: Vst3Plugin> IAudioProcessorTrait for Wrapper<P> {
             }
 
             // And then we'll make sure everything is in the right order
-            // NOTE: It's important that this sort is stable, because parameter changes need to be
-            //       processed before note events. Otherwise you'll get out of bounds note events
-            //       with block splitting when the note event occurs at one index after the end (or
-            //       on the exclusive end index) of the block.
-            // FIXME: Apparently stable sort allcoates if the slice is large enough. This should be
-            //        fixed at some point.
-            permit_alloc(|| {
-                process_events.sort_by_key(|event| match event {
-                    ProcessEvent::ParameterChange { timing, .. } => *timing,
-                    ProcessEvent::NoteEvent(event) => event.timing(),
-                })
-            });
+            // Preserve insertion order for equal timings. Parameter changes are inserted before
+            // note events, which prevents out-of-bounds note timings after block splitting. The
+            // explicit sequence key lets the unstable sort stay allocation-free.
+            process_events.sort_unstable_by_key(|event| (event.timing(), event.sequence()));
 
             let mut block_start = 0usize;
             let mut block_end;
@@ -1303,6 +1330,9 @@ impl<P: Vst3Plugin> IAudioProcessorTrait for Wrapper<P> {
                 {
                     let mut input_events = self.inner.input_events.borrow_mut();
                     input_events.clear();
+                    if process_events_overflowed {
+                        input_events.mark_overflowed();
+                    }
 
                     block_end = total_buffer_len;
                     for event_idx in event_start_idx..process_events.len() {
@@ -1311,6 +1341,7 @@ impl<P: Vst3Plugin> IAudioProcessorTrait for Wrapper<P> {
                                 timing,
                                 hash,
                                 normalized_value,
+                                ..
                             } => {
                                 // If this parameter change happens after the start of this block, then
                                 // we'll split the block here and handle this parameter change after
@@ -1327,7 +1358,7 @@ impl<P: Vst3Plugin> IAudioProcessorTrait for Wrapper<P> {
                                     Some(sample_rate),
                                 );
                             }
-                            ProcessEvent::NoteEvent(event) => {
+                            ProcessEvent::NoteEvent { event, .. } => {
                                 // We need to make sure to compensate the event for any block splitting,
                                 // since we had to create the event object beforehand
                                 let mut event = event.clone();

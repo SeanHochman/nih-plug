@@ -107,7 +107,8 @@ use crate::wrapper::clap::util::{read_stream, write_stream};
 use crate::wrapper::state::{self};
 use crate::wrapper::util::buffer_management::{BufferManager, ChannelPointers};
 use crate::wrapper::util::{
-    clamp_input_event_timing, clamp_output_event_timing, hash_param_id, process_wrapper, strlcpy,
+    InputEvents, clamp_input_event_timing, clamp_output_event_timing, hash_param_id,
+    process_wrapper, strlcpy,
 };
 
 /// How many output parameter changes we can store in our output parameter change queue. Storing
@@ -162,7 +163,7 @@ pub struct Wrapper<P: ClapPlugin> {
     ///
     /// TODO: Maybe load these lazily at some point instead of needing to spool them all to this
     ///       queue first
-    input_events: AtomicRefCell<VecDeque<PluginNoteEvent<P>>>,
+    input_events: AtomicRefCell<InputEvents<PluginNoteEvent<P>>>,
     /// Stores any events the plugin has output during the current processing cycle, analogous to
     /// `input_events`.
     output_events: AtomicRefCell<VecDeque<PluginNoteEvent<P>>>,
@@ -601,7 +602,7 @@ impl<P: ClapPlugin> Wrapper<P> {
             ),
             current_buffer_config: AtomicCell::new(None),
             current_process_mode: AtomicCell::new(ProcessMode::Realtime),
-            input_events: AtomicRefCell::new(VecDeque::with_capacity(512)),
+            input_events: AtomicRefCell::new(InputEvents::new(P::MIDI_INPUT_EVENT_CAPACITY)),
             output_events: AtomicRefCell::new(VecDeque::with_capacity(512)),
             last_process_status: AtomicCell::new(ProcessStatus::Normal),
             latency_changed: AtomicBool::new(false),
@@ -1493,10 +1494,10 @@ impl<P: ClapPlugin> Wrapper<P> {
     ///
     /// `in_` must contain only pointers to valid data (Clippy insists on there being a safety
     /// section here).
-    pub unsafe fn handle_in_event(
+    unsafe fn handle_in_event(
         &self,
         event: *const clap_event_header,
-        input_events: &mut AtomicRefMut<VecDeque<PluginNoteEvent<P>>>,
+        input_events: &mut AtomicRefMut<InputEvents<PluginNoteEvent<P>>>,
         transport_info: Option<&mut *const clap_event_transport>,
         current_sample_idx: usize,
         total_buffer_len: usize,

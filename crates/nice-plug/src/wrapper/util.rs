@@ -1,15 +1,56 @@
 use backtrace::Backtrace;
 use nice_plug_core::plugin::Plugin;
 use std::cmp;
+use std::collections::VecDeque;
 use std::marker::PhantomData;
 use std::os::raw::c_char;
 use std::sync::atomic::AtomicBool;
 
 use crate::util::permit_alloc;
-
 pub(crate) mod buffer_management;
 #[cfg(all(debug_assertions, feature = "editor"))]
 pub(crate) mod context_checks;
+
+pub(crate) struct InputEvents<E> {
+    events: VecDeque<E>,
+    capacity: usize,
+    overflowed: bool,
+}
+
+impl<E> InputEvents<E> {
+    pub(crate) fn new(capacity: usize) -> Self {
+        Self {
+            events: VecDeque::with_capacity(capacity),
+            capacity,
+            overflowed: false,
+        }
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.events.clear();
+        self.overflowed = false;
+    }
+
+    pub(crate) fn push_back(&mut self, event: E) {
+        if self.events.len() < self.capacity {
+            self.events.push_back(event);
+        } else {
+            self.overflowed = true;
+        }
+    }
+
+    pub(crate) fn pop_front(&mut self) -> Option<E> {
+        self.events.pop_front()
+    }
+
+    pub(crate) fn mark_overflowed(&mut self) {
+        self.overflowed = true;
+    }
+
+    pub(crate) fn overflowed(&self) -> bool {
+        self.overflowed
+    }
+}
 
 /// The bit that controls flush-to-zero behavior for denormals in 32 and 64-bit floating point
 /// numbers on x86 family architectures. Rust 1.75 deprecated the built in functions for controlling
@@ -318,5 +359,21 @@ mod miri {
             unsafe { CStr::from_ptr(dest.as_ptr()) }.to_str(),
             Ok("Hello")
         );
+    }
+
+    #[test]
+    fn input_events_drop_excess_entries_and_report_overflow() {
+        let mut events = InputEvents::new(2);
+        events.push_back(1);
+        events.push_back(2);
+        events.push_back(3);
+
+        assert!(events.overflowed());
+        assert_eq!(events.pop_front(), Some(1));
+        assert_eq!(events.pop_front(), Some(2));
+        assert_eq!(events.pop_front(), None);
+
+        events.clear();
+        assert!(!events.overflowed());
     }
 }

@@ -75,6 +75,12 @@ pub trait ProcessContext<P: Plugin> {
     /// ```
     fn next_event(&mut self) -> Option<PluginNoteEvent<P>>;
 
+    /// Whether input note events exceeded [`Plugin::MIDI_INPUT_EVENT_CAPACITY`] for this process
+    /// call. The wrapper drops excess events instead of growing its queue on the audio thread.
+    fn input_events_overflowed(&self) -> bool {
+        false
+    }
+
     /// Send an event to the host. Only available when
     /// [`Plugin::MIDI_OUTPUT`][crate::plugin::Plugin::MIDI_INPUT] is set. Will not do anything
     /// otherwise.

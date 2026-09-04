@@ -21,6 +21,7 @@ use nice_plug_core::{
 use crate::wrapper::vst3::Vst3Plugin;
 
 use super::inner::{Task, WrapperInner};
+use crate::wrapper::util::InputEvents;
 
 /// An [`ActivateContext`] implementation for the wrapper.
 ///
@@ -49,7 +50,7 @@ pub(crate) struct PendingActivateContextRequests {
 /// unnecessary atomic operations to lock the uncontested locks.
 pub(crate) struct WrapperProcessContext<'a, P: Vst3Plugin> {
     pub(super) inner: &'a WrapperInner<P>,
-    pub(super) input_events_guard: AtomicRefMut<'a, VecDeque<PluginNoteEvent<P>>>,
+    pub(super) input_events_guard: AtomicRefMut<'a, InputEvents<PluginNoteEvent<P>>>,
     pub(super) output_events_guard: AtomicRefMut<'a, VecDeque<PluginNoteEvent<P>>>,
     pub(super) transport: Transport,
 }
@@ -114,6 +115,10 @@ impl<P: Vst3Plugin> ProcessContext<P> for WrapperProcessContext<'_, P> {
 
     fn next_event(&mut self) -> Option<PluginNoteEvent<P>> {
         self.input_events_guard.pop_front()
+    }
+
+    fn input_events_overflowed(&self) -> bool {
+        self.input_events_guard.overflowed()
     }
 
     fn send_event(&mut self, event: PluginNoteEvent<P>) {

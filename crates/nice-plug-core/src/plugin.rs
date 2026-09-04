@@ -112,6 +112,10 @@ pub trait Plugin: Default + Send + 'static {
     /// Whether the plugin accepts note events, and what which events it wants to receive. If this
     /// is set to [`MidiConfig::None`], then the plugin won't receive any note events.
     const MIDI_INPUT: MidiConfig = MidiConfig::None;
+    /// The maximum number of input note events retained for one process call. Additional events
+    /// are dropped without allocating, and the process context reports the overflow so plugins
+    /// that keep note or gate state can reject the block safely.
+    const MIDI_INPUT_EVENT_CAPACITY: usize = 1024;
     /// Whether the plugin can output note events. If this is set to [`MidiConfig::None`], then the
     /// plugin won't have a note output port. When this is set to another value, then in most hosts
     /// the plugin will consume all note and MIDI CC input. If you don't want that, then you will

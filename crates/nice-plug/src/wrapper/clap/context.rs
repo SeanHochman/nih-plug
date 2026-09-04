@@ -17,6 +17,7 @@ use std::collections::{HashMap, VecDeque};
 use super::wrapper::{Task, Wrapper};
 use crate::event_loop::EventLoop;
 use crate::wrapper::clap::ClapPlugin;
+use crate::wrapper::util::InputEvents;
 use crate::wrapper::util::strlcpy;
 
 /// An [`ActivateContext`] implementation for the wrapper.
@@ -43,7 +44,7 @@ pub(crate) struct PendingActivateContextRequests {
 /// unnecessary atomic operations to lock the uncontested `RwLock`s.
 pub(crate) struct WrapperProcessContext<'a, P: ClapPlugin> {
     pub(super) wrapper: &'a Wrapper<P>,
-    pub(super) input_events_guard: AtomicRefMut<'a, VecDeque<PluginNoteEvent<P>>>,
+    pub(super) input_events_guard: AtomicRefMut<'a, InputEvents<PluginNoteEvent<P>>>,
     pub(super) output_events_guard: AtomicRefMut<'a, VecDeque<PluginNoteEvent<P>>>,
     pub(super) transport: Transport,
 }
@@ -118,6 +119,10 @@ impl<P: ClapPlugin> ProcessContext<P> for WrapperProcessContext<'_, P> {
 
     fn next_event(&mut self) -> Option<PluginNoteEvent<P>> {
         self.input_events_guard.pop_front()
+    }
+
+    fn input_events_overflowed(&self) -> bool {
+        self.input_events_guard.overflowed()
     }
 
     fn send_event(&mut self, event: PluginNoteEvent<P>) {

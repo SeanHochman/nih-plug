@@ -28,6 +28,9 @@ use vst3::Steinberg::Vst::{IComponentHandler, IComponentHandlerTrait, RestartFla
 use vst3::Steinberg::{kInvalidArgument, kResultOk, tresult};
 
 use super::context::{WrapperActivateContext, WrapperProcessContext};
+use crate::wrapper::util::InputEvents;
+
+const BASE_PROCESS_EVENT_CAPACITY: usize = 4096;
 use super::note_expressions::NoteExpressionController;
 use super::param_units::ParamUnits;
 use super::util::{VST3_MIDI_PARAMS_END, VST3_MIDI_PARAMS_START};
@@ -123,7 +126,7 @@ pub(crate) struct WrapperInner<P: Vst3Plugin> {
     /// NOTE: Because with VST3 MIDI CC messages are sent as parameter changes and VST3 does not
     ///       interleave parameter changes and note events, this queue has to be sorted when
     ///       creating the process context
-    pub input_events: AtomicRefCell<VecDeque<PluginNoteEvent<P>>>,
+    pub input_events: AtomicRefCell<InputEvents<PluginNoteEvent<P>>>,
     /// Stores any events the plugin has output during the current processing cycle, analogous to
     /// `input_events`.
     pub output_events: AtomicRefCell<VecDeque<PluginNoteEvent<P>>>,
@@ -204,6 +207,8 @@ pub enum ProcessEvent<P: Plugin> {
         hash: u32,
         /// The normalized values, as provided by the host.
         normalized_value: f32,
+        /// The event's insertion order, used to make the in-place sort stable.
+        sequence: usize,
     },
     /// An incoming parameter change sent by the host. This will only be used when sample accurate
     /// automation has been enabled, and the parameters are only updated when we process this
@@ -212,7 +217,25 @@ pub enum ProcessEvent<P: Plugin> {
     /// The timing stored within the note event needs to have the block start index subtraced from
     /// it. make sure to subtract the block start index with [`NoteEvent::subtract_timing()`] before
     /// putting this into the input event queue.
-    NoteEvent(PluginNoteEvent<P>),
+    NoteEvent {
+        event: PluginNoteEvent<P>,
+        sequence: usize,
+    },
+}
+
+impl<P: Plugin> ProcessEvent<P> {
+    pub fn timing(&self) -> u32 {
+        match self {
+            Self::ParameterChange { timing, .. } => *timing,
+            Self::NoteEvent { event, .. } => event.timing(),
+        }
+    }
+
+    pub fn sequence(&self) -> usize {
+        match self {
+            Self::ParameterChange { sequence, .. } | Self::NoteEvent { sequence, .. } => *sequence,
+        }
+    }
 }
 
 impl<P: Vst3Plugin> WrapperInner<P> {
@@ -340,10 +363,12 @@ impl<P: Vst3Plugin> WrapperInner<P> {
                 0,
                 AudioIOLayout::default(),
             )),
-            input_events: AtomicRefCell::new(VecDeque::with_capacity(1024)),
+            input_events: AtomicRefCell::new(InputEvents::new(P::MIDI_INPUT_EVENT_CAPACITY)),
             output_events: AtomicRefCell::new(VecDeque::with_capacity(1024)),
             note_expression_controller: AtomicRefCell::new(NoteExpressionController::default()),
-            process_events: AtomicRefCell::new(Vec::with_capacity(4096)),
+            process_events: AtomicRefCell::new(Vec::with_capacity(
+                BASE_PROCESS_EVENT_CAPACITY.saturating_add(P::MIDI_INPUT_EVENT_CAPACITY),
+            )),
             param_hashes,
             param_by_hash,
             param_id_by_hash,
