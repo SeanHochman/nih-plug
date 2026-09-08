@@ -4,6 +4,26 @@ use crate::{midi::PluginNoteEvent, plugin::Plugin};
 
 use super::PluginApi;
 
+/// The framework's current delivery state for note events queued by the plugin.
+///
+/// Enqueueing and host delivery happen at different points in a process call. A queued event is
+/// only handed to the host after [`Plugin::process()`][crate::plugin::Plugin::process()] returns,
+/// so a plugin observes the result of that delivery attempt on its next process call. The CLAP
+/// wrapper reports host rejection and keeps ordinary note and MIDI events queued for an ordered
+/// retry. Other wrappers currently report only their retained queue state.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum OutputEventDeliveryStatus {
+    /// No note events are waiting for delivery.
+    #[default]
+    Idle,
+    /// One or more note events are queued but have not been handed to the host yet.
+    Pending,
+    /// The CLAP host rejected the oldest queued event. Ordinary note and MIDI events remain pending
+    /// in FIFO order and will be retried at the next process boundary. SysEx output is not retained
+    /// because its generic payload cannot be cloned with a real-time safety guarantee.
+    HostRejected,
+}
+
 /// Contains both context data and callbacks the plugin can use during processing. Most notably this
 /// is how a plugin sends and receives note events, gets transport information, and accesses
 /// sidechain inputs and auxiliary outputs. This is passed to the plugin during as part of
@@ -81,10 +101,20 @@ pub trait ProcessContext<P: Plugin> {
         false
     }
 
-    /// Send an event to the host. Only available when
+    /// Get the delivery state for output note events retained by the framework. CLAP host rejection
+    /// is reported on the next process call. This is a transport fact only; plugins remain
+    /// responsible for note and voice lifetime.
+    fn output_event_delivery_status(&self) -> OutputEventDeliveryStatus {
+        OutputEventDeliveryStatus::Idle
+    }
+
+    /// Queue an event to be sent to the host. Only available when
     /// [`Plugin::MIDI_OUTPUT`][crate::plugin::Plugin::MIDI_INPUT] is set. Will not do anything
-    /// otherwise.
-    fn send_event(&mut self, event: PluginNoteEvent<P>);
+    /// otherwise. Returns `false` without modifying the queue when the activation-sized output
+    /// event capacity has been reached. A `true` result means the framework retained the event; it
+    /// does not mean the host has accepted it yet. Use [`Self::output_event_delivery_status()`] to
+    /// observe a later host rejection.
+    fn send_event(&mut self, event: PluginNoteEvent<P>) -> bool;
 
     /// Update the current latency of the plugin. If the plugin is currently processing audio, then
     /// this may cause audio playback to be restarted.

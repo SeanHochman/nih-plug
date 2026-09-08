@@ -81,8 +81,13 @@ impl<P: Plugin, B: Backend<P>> ProcessContext<P> for WrapperProcessContext<'_, P
         }
     }
 
-    fn send_event(&mut self, event: PluginNoteEvent<P>) {
-        self.output_events.push(event);
+    fn send_event(&mut self, event: PluginNoteEvent<P>) -> bool {
+        if self.output_events.len() >= P::MIDI_OUTPUT_EVENT_CAPACITY {
+            false
+        } else {
+            self.output_events.push(event);
+            true
+        }
     }
 
     fn set_latency_samples(&self, samples: u32) {

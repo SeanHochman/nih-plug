@@ -4,7 +4,7 @@ use clap_sys::id::{CLAP_INVALID_ID, clap_id};
 use clap_sys::string_sizes::CLAP_NAME_SIZE;
 use nice_plug_core::context::PluginApi;
 use nice_plug_core::context::activate::ActivateContext;
-use nice_plug_core::context::process::{ProcessContext, Transport};
+use nice_plug_core::context::process::{OutputEventDeliveryStatus, ProcessContext, Transport};
 use nice_plug_core::context::remote_controls::{
     RemoteControlsContext, RemoteControlsPage, RemoteControlsSection,
 };
@@ -12,13 +12,13 @@ use nice_plug_core::midi::PluginNoteEvent;
 use nice_plug_core::params::Param;
 use nice_plug_core::params::internals::ParamPtr;
 use std::cell::Cell;
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 
 use super::wrapper::{Task, Wrapper};
 use crate::event_loop::EventLoop;
 use crate::wrapper::clap::ClapPlugin;
-use crate::wrapper::util::InputEvents;
 use crate::wrapper::util::strlcpy;
+use crate::wrapper::util::{InputEvents, OutputEvents};
 
 /// An [`ActivateContext`] implementation for the wrapper.
 ///
@@ -45,7 +45,7 @@ pub(crate) struct PendingActivateContextRequests {
 pub(crate) struct WrapperProcessContext<'a, P: ClapPlugin> {
     pub(super) wrapper: &'a Wrapper<P>,
     pub(super) input_events_guard: AtomicRefMut<'a, InputEvents<PluginNoteEvent<P>>>,
-    pub(super) output_events_guard: AtomicRefMut<'a, VecDeque<PluginNoteEvent<P>>>,
+    pub(super) output_events_guard: AtomicRefMut<'a, OutputEvents<PluginNoteEvent<P>>>,
     pub(super) transport: Transport,
 }
 
@@ -125,8 +125,12 @@ impl<P: ClapPlugin> ProcessContext<P> for WrapperProcessContext<'_, P> {
         self.input_events_guard.overflowed()
     }
 
-    fn send_event(&mut self, event: PluginNoteEvent<P>) {
-        self.output_events_guard.push_back(event);
+    fn output_event_delivery_status(&self) -> OutputEventDeliveryStatus {
+        self.output_events_guard.delivery_status()
+    }
+
+    fn send_event(&mut self, event: PluginNoteEvent<P>) -> bool {
+        self.output_events_guard.push_back(event)
     }
 
     fn set_latency_samples(&self, samples: u32) {

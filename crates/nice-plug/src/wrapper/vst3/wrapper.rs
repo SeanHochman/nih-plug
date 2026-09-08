@@ -1071,7 +1071,10 @@ impl<P: Vst3Plugin> IAudioProcessorTrait for Wrapper<P> {
                 }
             };
 
-            process_wrapper(|| plugin.reset());
+            process_wrapper(|| {
+                self.inner.output_events.borrow_mut().clear();
+                plugin.reset();
+            });
         }
 
         // We don't have any special handling for suspending and resuming plugins, yet

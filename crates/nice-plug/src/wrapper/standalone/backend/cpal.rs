@@ -861,7 +861,7 @@ impl CpalMidir {
         }
 
         let mut midi_input_events = Vec::with_capacity(self.config.midi_capacity as usize);
-        let mut midi_output_events = Vec::with_capacity(self.config.midi_capacity as usize);
+        let mut midi_output_events = Vec::with_capacity(P::MIDI_OUTPUT_EVENT_CAPACITY);
 
         // Can't borrow from `self` in the callback
         let config = self.config.clone();

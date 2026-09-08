@@ -52,7 +52,7 @@ impl Plugin for MidiInverter {
         // We'll invert the channel, note index, velocity, pressure, CC value, pitch bend, and
         // anything else that is invertable for all events we receive
         while let Some(event) = context.next_event() {
-            match event {
+            let _queued = match event {
                 NoteEvent::NoteOn {
                     timing,
                     voice_id,
@@ -211,8 +211,8 @@ impl Plugin for MidiInverter {
                     cc,
                     value: 1.0 - value,
                 }),
-                _ => (),
-            }
+                _ => true,
+            };
         }
 
         ProcessStatus::Normal

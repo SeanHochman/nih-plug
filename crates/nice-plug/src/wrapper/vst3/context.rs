@@ -3,12 +3,11 @@ use nice_plug_core::{
     context::{
         PluginApi,
         activate::ActivateContext,
-        process::{ProcessContext, Transport},
+        process::{OutputEventDeliveryStatus, ProcessContext, Transport},
     },
     midi::PluginNoteEvent,
 };
 use std::cell::Cell;
-use std::collections::VecDeque;
 
 #[cfg(feature = "editor")]
 use vst3::Steinberg::Vst::IComponentHandlerTrait;
@@ -21,7 +20,7 @@ use nice_plug_core::{
 use crate::wrapper::vst3::Vst3Plugin;
 
 use super::inner::{Task, WrapperInner};
-use crate::wrapper::util::InputEvents;
+use crate::wrapper::util::{InputEvents, OutputEvents};
 
 /// An [`ActivateContext`] implementation for the wrapper.
 ///
@@ -51,7 +50,7 @@ pub(crate) struct PendingActivateContextRequests {
 pub(crate) struct WrapperProcessContext<'a, P: Vst3Plugin> {
     pub(super) inner: &'a WrapperInner<P>,
     pub(super) input_events_guard: AtomicRefMut<'a, InputEvents<PluginNoteEvent<P>>>,
-    pub(super) output_events_guard: AtomicRefMut<'a, VecDeque<PluginNoteEvent<P>>>,
+    pub(super) output_events_guard: AtomicRefMut<'a, OutputEvents<PluginNoteEvent<P>>>,
     pub(super) transport: Transport,
 }
 
@@ -121,8 +120,12 @@ impl<P: Vst3Plugin> ProcessContext<P> for WrapperProcessContext<'_, P> {
         self.input_events_guard.overflowed()
     }
 
-    fn send_event(&mut self, event: PluginNoteEvent<P>) {
-        self.output_events_guard.push_back(event);
+    fn output_event_delivery_status(&self) -> OutputEventDeliveryStatus {
+        self.output_events_guard.delivery_status()
+    }
+
+    fn send_event(&mut self, event: PluginNoteEvent<P>) -> bool {
+        self.output_events_guard.push_back(event)
     }
 
     fn set_latency_samples(&self, samples: u32) {

@@ -81,7 +81,7 @@ use nice_plug_core::plugin::{Plugin, PluginState, ProcessStatus, TaskExecutor};
 use nice_plug_core::plugin::{TrackColor, TrackInfo};
 use parking_lot::Mutex;
 use std::borrow::Borrow;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::ffi::{CStr, c_void};
 use std::mem;
 use std::num::NonZeroU32;
@@ -107,13 +107,119 @@ use crate::wrapper::clap::util::{read_stream, write_stream};
 use crate::wrapper::state::{self};
 use crate::wrapper::util::buffer_management::{BufferManager, ChannelPointers};
 use crate::wrapper::util::{
-    InputEvents, clamp_input_event_timing, clamp_output_event_timing, hash_param_id,
+    InputEvents, OutputEvents, clamp_input_event_timing, clamp_output_event_timing, hash_param_id,
     process_wrapper, strlcpy,
 };
 
 /// How many output parameter changes we can store in our output parameter change queue. Storing
 /// more than this many parameters at a time will cause changes to get lost.
 const OUTPUT_EVENT_QUEUE_CAPACITY: usize = 2048;
+
+fn clap_note_end_event(time: u32, voice_id: Option<i32>, channel: u8, note: u8) -> clap_event_note {
+    clap_event_note {
+        header: clap_event_header {
+            size: mem::size_of::<clap_event_note>() as u32,
+            time,
+            space_id: CLAP_CORE_EVENT_SPACE_ID,
+            type_: CLAP_EVENT_NOTE_END,
+            flags: 0,
+        },
+        note_id: voice_id.unwrap_or(-1),
+        port_index: 0,
+        channel: channel as i16,
+        key: note as i16,
+        velocity: 0.0,
+    }
+}
+
+fn handle_note_push_result<S: SysExMessage>(
+    output_events: &mut OutputEvents<NoteEvent<S>>,
+    retry_event: Option<NoteEvent<S>>,
+    push_successful: bool,
+) -> bool {
+    if push_successful {
+        return true;
+    }
+
+    if let Some(mut retry_event) = retry_event {
+        let timing = retry_event.timing();
+        retry_event.subtract_timing(timing);
+        output_events.retain_rejected_front(retry_event);
+    } else {
+        output_events.mark_host_rejected();
+    }
+    false
+}
+
+#[cfg(test)]
+mod output_event_tests {
+    use super::*;
+    use nice_plug_core::context::process::OutputEventDeliveryStatus;
+
+    #[test]
+    fn note_end_preserves_the_complete_clap_address() {
+        let event = clap_note_end_event(37, Some(0x1020_3040), 11, 94);
+
+        assert_eq!(event.header.time, 37);
+        assert_eq!(event.header.space_id, CLAP_CORE_EVENT_SPACE_ID);
+        assert_eq!(event.header.type_, CLAP_EVENT_NOTE_END);
+        assert_eq!(event.note_id, 0x1020_3040);
+        assert_eq!(event.port_index, 0);
+        assert_eq!(event.channel, 11);
+        assert_eq!(event.key, 94);
+        assert_eq!(event.velocity, 0.0);
+    }
+
+    #[test]
+    fn host_rejection_retains_the_front_event_for_ordered_retry() {
+        let terminated = NoteEvent::<()>::VoiceTerminated {
+            timing: 23,
+            voice_id: Some(17),
+            channel: 4,
+            note: 61,
+        };
+        let following = NoteEvent::NoteOn {
+            timing: 29,
+            voice_id: Some(18),
+            channel: 4,
+            note: 62,
+            velocity: 0.75,
+        };
+        let mut output_events = OutputEvents::new(2);
+        assert!(output_events.push_back(terminated));
+        assert!(output_events.push_back(following));
+
+        for _ in 0..8 {
+            let rejected = output_events.pop_front().unwrap();
+            assert!(!handle_note_push_result(
+                &mut output_events,
+                Some(rejected),
+                false
+            ));
+            assert_eq!(
+                output_events.delivery_status(),
+                OutputEventDeliveryStatus::HostRejected
+            );
+            assert!(!output_events.push_back(NoteEvent::NoteOff {
+                timing: 31,
+                voice_id: Some(19),
+                channel: 4,
+                note: 63,
+                velocity: 0.25,
+            }));
+        }
+        assert!(matches!(
+            output_events.pop_front(),
+            Some(NoteEvent::VoiceTerminated {
+                timing: 0,
+                voice_id: Some(17),
+                channel: 4,
+                note: 61,
+            })
+        ));
+        assert_eq!(output_events.pop_front(), Some(following));
+    }
+}
 
 /// Reject corrupt or hostile length prefixes before allocating the CLAP state buffer. CLAP streams
 /// do not expose their remaining length, so Nice Plug prepends this length when saving state.
@@ -166,7 +272,7 @@ pub struct Wrapper<P: ClapPlugin> {
     input_events: AtomicRefCell<InputEvents<PluginNoteEvent<P>>>,
     /// Stores any events the plugin has output during the current processing cycle, analogous to
     /// `input_events`.
-    output_events: AtomicRefCell<VecDeque<PluginNoteEvent<P>>>,
+    output_events: AtomicRefCell<OutputEvents<PluginNoteEvent<P>>>,
     /// The last process status returned by the plugin. This is used for tail handling.
     last_process_status: AtomicCell<ProcessStatus>,
     /// Whether the latency has changed since the last call to `activate`. When this is set,
@@ -603,7 +709,7 @@ impl<P: ClapPlugin> Wrapper<P> {
             current_buffer_config: AtomicCell::new(None),
             current_process_mode: AtomicCell::new(ProcessMode::Realtime),
             input_events: AtomicRefCell::new(InputEvents::new(P::MIDI_INPUT_EVENT_CAPACITY)),
-            output_events: AtomicRefCell::new(VecDeque::with_capacity(512)),
+            output_events: AtomicRefCell::new(OutputEvents::new(P::MIDI_OUTPUT_EVENT_CAPACITY)),
             last_process_status: AtomicCell::new(ProcessStatus::Normal),
             latency_changed: AtomicBool::new(false),
             current_latency: AtomicU32::new(0),
@@ -1134,6 +1240,16 @@ impl<P: ClapPlugin> Wrapper<P> {
         // Also send all note events generated by the plugin
         let mut output_events = self.output_events.borrow_mut();
         while let Some(event) = output_events.pop_front() {
+            // CLAP output queues can temporarily reject an event. Keep ordinary note/MIDI events
+            // available for an ordered retry without cloning a potentially allocating SysEx
+            // payload. SysEx retains its existing single-attempt behavior, but the rejection is
+            // still observable through the process context.
+            let retry_event = if matches!(event, NoteEvent::MidiSysEx { .. }) {
+                None
+            } else {
+                Some(event.clone())
+            };
+
             // Out of bounds events are clamped to the buffer's size
             let time = clamp_output_event_timing(
                 event.timing() + current_sample_idx as u32,
@@ -1202,20 +1318,7 @@ impl<P: ClapPlugin> Wrapper<P> {
                     channel,
                     note,
                 } if P::MIDI_INPUT >= MidiConfig::Basic => {
-                    let event = clap_event_note {
-                        header: clap_event_header {
-                            size: mem::size_of::<clap_event_note>() as u32,
-                            time,
-                            space_id: CLAP_CORE_EVENT_SPACE_ID,
-                            type_: CLAP_EVENT_NOTE_END,
-                            flags: 0,
-                        },
-                        note_id: voice_id.unwrap_or(-1),
-                        port_index: 0,
-                        channel: channel as i16,
-                        key: note as i16,
-                        velocity: 0.0,
-                    };
+                    let event = clap_note_end_event(time, voice_id, channel, note);
 
                     unsafe {
                         clap_call! { out=>try_push(out, &event.header) }
@@ -1477,7 +1580,9 @@ impl<P: ClapPlugin> Wrapper<P> {
                 }
             };
 
-            crate::nice_debug_assert!(push_successful, "Could not send note event");
+            if !handle_note_push_result(&mut output_events, retry_event, push_successful) {
+                break;
+            }
         }
     }
 
@@ -2122,6 +2227,7 @@ impl<P: ClapPlugin> Wrapper<P> {
             let now = Instant::now();
             loop {
                 if let Some(mut plugin) = wrapper.plugin.try_lock() {
+                    wrapper.output_events.borrow_mut().clear();
                     plugin.reset();
                     break;
                 } else if now.elapsed() > Duration::from_millis(200) {
@@ -2174,6 +2280,7 @@ impl<P: ClapPlugin> Wrapper<P> {
             let now = Instant::now();
             loop {
                 if let Some(mut plugin) = wrapper.plugin.try_lock() {
+                    wrapper.output_events.borrow_mut().clear();
                     plugin.reset();
                     break;
                 } else if now.elapsed() > Duration::from_millis(200) {

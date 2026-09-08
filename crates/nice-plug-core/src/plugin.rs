@@ -121,6 +121,11 @@ pub trait Plugin: Default + Send + 'static {
     /// the plugin will consume all note and MIDI CC input. If you don't want that, then you will
     /// need to forward those events yourself.
     const MIDI_OUTPUT: MidiConfig = MidiConfig::None;
+    /// The maximum number of output note events retained between process calls. The framework
+    /// allocates this storage before processing starts. Additional events are rejected by
+    /// [`ProcessContext::send_event()`][crate::context::process::ProcessContext::send_event]
+    /// instead of growing the queue on the audio thread.
+    const MIDI_OUTPUT_EVENT_CAPACITY: usize = 1024;
     /// If enabled, the audio processing cycle may be split up into multiple smaller chunks if
     /// parameter values change occur in the middle of the buffer. Depending on the host these
     /// blocks may be as small as a single sample. Bitwig Studio sends at most one parameter change

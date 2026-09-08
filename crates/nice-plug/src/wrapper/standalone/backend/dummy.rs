@@ -99,7 +99,7 @@ impl<P: Plugin> Backend<P> for Dummy {
             BufferManager::for_audio_io_layout(num_samples, self.audio_io_layout);
 
         // This queue will never actually be used
-        let mut midi_output_events = Vec::with_capacity(1024);
+        let mut midi_output_events = Vec::with_capacity(P::MIDI_OUTPUT_EVENT_CAPACITY);
         let mut num_processed_samples = 0usize;
         loop {
             let period_start = Instant::now();

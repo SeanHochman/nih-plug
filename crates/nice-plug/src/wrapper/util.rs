@@ -7,6 +7,7 @@ use std::os::raw::c_char;
 use std::sync::atomic::AtomicBool;
 
 use crate::util::permit_alloc;
+use nice_plug_core::context::process::OutputEventDeliveryStatus;
 pub(crate) mod buffer_management;
 #[cfg(all(debug_assertions, feature = "editor"))]
 pub(crate) mod context_checks;
@@ -15,6 +16,63 @@ pub(crate) struct InputEvents<E> {
     events: VecDeque<E>,
     capacity: usize,
     overflowed: bool,
+}
+
+pub(crate) struct OutputEvents<E> {
+    events: VecDeque<E>,
+    capacity: usize,
+    delivery_status: OutputEventDeliveryStatus,
+}
+
+impl<E> OutputEvents<E> {
+    pub(crate) fn new(capacity: usize) -> Self {
+        Self {
+            events: VecDeque::with_capacity(capacity),
+            capacity,
+            delivery_status: OutputEventDeliveryStatus::Idle,
+        }
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.events.clear();
+        self.delivery_status = OutputEventDeliveryStatus::Idle;
+    }
+
+    pub(crate) fn push_back(&mut self, event: E) -> bool {
+        if self.events.len() >= self.capacity {
+            return false;
+        }
+
+        self.events.push_back(event);
+        if self.delivery_status == OutputEventDeliveryStatus::Idle {
+            self.delivery_status = OutputEventDeliveryStatus::Pending;
+        }
+        true
+    }
+
+    pub(crate) fn pop_front(&mut self) -> Option<E> {
+        let event = self.events.pop_front();
+        self.delivery_status = if self.events.is_empty() {
+            OutputEventDeliveryStatus::Idle
+        } else {
+            OutputEventDeliveryStatus::Pending
+        };
+        event
+    }
+
+    pub(crate) fn retain_rejected_front(&mut self, event: E) {
+        debug_assert!(self.events.len() < self.capacity);
+        self.events.push_front(event);
+        self.delivery_status = OutputEventDeliveryStatus::HostRejected;
+    }
+
+    pub(crate) fn mark_host_rejected(&mut self) {
+        self.delivery_status = OutputEventDeliveryStatus::HostRejected;
+    }
+
+    pub(crate) fn delivery_status(&self) -> OutputEventDeliveryStatus {
+        self.delivery_status
+    }
 }
 
 impl<E> InputEvents<E> {
@@ -375,5 +433,51 @@ mod miri {
 
         events.clear();
         assert!(!events.overflowed());
+    }
+
+    #[test]
+    fn output_events_are_bounded_and_keep_fifo_order() {
+        let mut events = OutputEvents::new(2);
+
+        assert!(events.push_back(1));
+        assert!(events.push_back(2));
+        assert!(!events.push_back(3));
+        assert_eq!(events.delivery_status(), OutputEventDeliveryStatus::Pending);
+        assert_eq!(events.pop_front(), Some(1));
+        assert_eq!(events.pop_front(), Some(2));
+        assert_eq!(events.pop_front(), None);
+        assert_eq!(events.delivery_status(), OutputEventDeliveryStatus::Idle);
+    }
+
+    #[test]
+    fn output_events_retain_rejected_front_before_new_events() {
+        let mut events = OutputEvents::new(3);
+        assert!(events.push_back(1));
+        assert!(events.push_back(2));
+
+        let rejected = events.pop_front().unwrap();
+        events.retain_rejected_front(rejected);
+        assert_eq!(
+            events.delivery_status(),
+            OutputEventDeliveryStatus::HostRejected
+        );
+        assert!(events.push_back(3));
+        assert_eq!(events.pop_front(), Some(1));
+        assert_eq!(events.pop_front(), Some(2));
+        assert_eq!(events.pop_front(), Some(3));
+    }
+
+    #[test]
+    fn clearing_output_events_resets_delivery_state() {
+        let mut events = OutputEvents::new(1);
+        assert!(events.push_back(1));
+        let rejected = events.pop_front().unwrap();
+        events.retain_rejected_front(rejected);
+
+        events.clear();
+
+        assert_eq!(events.pop_front(), None);
+        assert_eq!(events.delivery_status(), OutputEventDeliveryStatus::Idle);
+        assert!(events.push_back(2));
     }
 }

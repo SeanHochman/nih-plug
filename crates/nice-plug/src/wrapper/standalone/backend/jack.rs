@@ -110,7 +110,7 @@ impl<P: Plugin> Backend<P> for Jack {
         let mut input_events: Vec<PluginNoteEvent<P>> =
             Vec::with_capacity(self.config.midi_capacity as usize);
         let mut output_events: Vec<PluginNoteEvent<P>> =
-            Vec::with_capacity(self.config.midi_capacity as usize);
+            Vec::with_capacity(P::MIDI_OUTPUT_EVENT_CAPACITY);
 
         // This thread needs to be blocked until processing is finished
         let parker = Parker::new();

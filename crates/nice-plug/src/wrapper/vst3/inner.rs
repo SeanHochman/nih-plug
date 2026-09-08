@@ -17,7 +17,7 @@ use nice_plug_core::plugin::{Plugin, PluginState, ProcessStatus, TaskExecutor};
 use parking_lot::Mutex;
 #[cfg(feature = "editor")]
 use parking_lot::RwLock;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use try_lock::TryLock;
@@ -28,7 +28,7 @@ use vst3::Steinberg::Vst::{IComponentHandler, IComponentHandlerTrait, RestartFla
 use vst3::Steinberg::{kInvalidArgument, kResultOk, tresult};
 
 use super::context::{WrapperActivateContext, WrapperProcessContext};
-use crate::wrapper::util::InputEvents;
+use crate::wrapper::util::{InputEvents, OutputEvents};
 
 const BASE_PROCESS_EVENT_CAPACITY: usize = 4096;
 use super::note_expressions::NoteExpressionController;
@@ -129,7 +129,7 @@ pub(crate) struct WrapperInner<P: Vst3Plugin> {
     pub input_events: AtomicRefCell<InputEvents<PluginNoteEvent<P>>>,
     /// Stores any events the plugin has output during the current processing cycle, analogous to
     /// `input_events`.
-    pub output_events: AtomicRefCell<VecDeque<PluginNoteEvent<P>>>,
+    pub output_events: AtomicRefCell<OutputEvents<PluginNoteEvent<P>>>,
     /// VST3 has several useful predefined note expressions, but for some reason they are the only
     /// note event type that don't have MIDI note ID and channel fields. So we need to keep track of
     /// the most recent VST3 note IDs we've seen, and then map those back to MIDI note IDs and
@@ -364,7 +364,7 @@ impl<P: Vst3Plugin> WrapperInner<P> {
                 AudioIOLayout::default(),
             )),
             input_events: AtomicRefCell::new(InputEvents::new(P::MIDI_INPUT_EVENT_CAPACITY)),
-            output_events: AtomicRefCell::new(VecDeque::with_capacity(1024)),
+            output_events: AtomicRefCell::new(OutputEvents::new(P::MIDI_OUTPUT_EVENT_CAPACITY)),
             note_expression_controller: AtomicRefCell::new(NoteExpressionController::default()),
             process_events: AtomicRefCell::new(Vec::with_capacity(
                 BASE_PROCESS_EVENT_CAPACITY.saturating_add(P::MIDI_INPUT_EVENT_CAPACITY),
